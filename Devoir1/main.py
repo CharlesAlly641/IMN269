@@ -4,7 +4,8 @@ import cv2
 
 # Récupération de l'image
 image = cv2.imread("Sol.png")
-hauteur, largeur, _ = image.shape
+hauteur = image.shape[0]
+largeur = image.shape[1]
 
 # Points des droites parallèles
 p1 = np.array([45, 128, 1])
@@ -25,12 +26,10 @@ f2 = np.cross(d3, d4)
 # Calcul de la ligne d'horizon
 d = np.cross(f1, f2)
 
-# Normalisation de la ligne d'horizon
-# En géométrie projective, d et lambda*d représentent la même droite.
-# OpenCV applique la transformation via une division cartésienne.
-# Sans cette normalisation, les valeurs de d sont trop grandes,
-# ce qui écrase toutes les coordonnées vers (0,0) et produit une image de sortie noire.
-# À l'inverse, des valeurs trop petites donneraient une image géante.
+# Selon ce qu'on a vu dans le cours, d et lambda*d représentent la même droite.
+# On normalise d par d[2] pour obtenir la forme d = (d1, d2, 1), ce qui permet
+# une correspondance directe avec les points définis plus haute qui sont situés
+# sur le plan z = 1. Sinon, on obtient une image de sortie complètement noire.
 d = d / d[2]
 
 # Matrice de transformation H2
@@ -41,6 +40,7 @@ H2 = np.array([
 ])
 
 # Application de la matrice à toute l'image
+# Prend en paramètre l'image d'entrée, la matrice de transformation et les dimensions de l'image de sortie
 image_rectifiee = cv2.warpPerspective(image, H2, (largeur, hauteur))
 
 plt.figure(figsize=(10, 5))
