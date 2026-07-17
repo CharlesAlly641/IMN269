@@ -2,39 +2,20 @@ import cv2
 import numpy as np
 
 def detecter_harris_points(img, max_points=500):
-    """
-    Trouve tous les points d'intérêt (PI) dans chacune des images
-    """
-    # Source : https://www.geeksforgeeks.org/python/python-corner-detection-with-harris-corner-detection-method-using-opencv/
-    # Gestion de la conversion de couleur
-    operatedImage = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    operatedImage = np.float32(operatedImage)
-
-    # Calcul de la réponse de Harris
-    dst = cv2.cornerHarris(operatedImage, blockSize=2, ksize=3, k=0.04)
-
-    # Appliquer le seuil initial
-    seuil = 0.01 * dst.max()
-    coordonnees = np.argwhere(dst > seuil)
-
-    if len(coordonnees) == 0:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Finds the N strongest corners in a grayscale image using the Harris Corner Detector
+    pts = cv2.goodFeaturesToTrack(
+        gray,
+        maxCorners=max_points,
+        qualityLevel=0.01,
+        minDistance=5,
+        useHarrisDetector=True,
+        k=0.04
+    )
+    if pts is None:
         return np.array([], dtype=np.float32)
-
-    # Récupérer la valeur de la réponse de Harris pour chaque point détecté
-    scores = dst[coordonnees[:, 0], coordonnees[:, 1]]
-
-    # Trier les indices du plus grand score au plus petit
-    indices_tries = np.argsort(scores)[::-1]
-    coordonnees_triees = coordonnees[indices_tries]
-
-    # Limiter aux N meilleurs points
-    if len(coordonnees_triees) > max_points:
-        coordonnees_triees = coordonnees_triees[:max_points]
-
-    # Inversion (ligne, col) -> (x, y) pour OpenCV
-    pts = np.float32(coordonnees_triees[:, ::-1])
-
-    return pts
+    # Paired coordinates
+    return pts.reshape(-1, 2)
 
 
 def correlation_normalisee_fenetre(img1, img2, pts1, pts2, W=5, seuil=0.7):
@@ -149,7 +130,7 @@ def ransac_chapitre6(pcs_g, pcs_d, N_iterations=1000, t_seuil=1.0):
         num = np.sum(np.dot(pts_d_h, F_k) * pts_g_h, axis=1)
 
         # Dénominateur : ||F_k * p_g||^2 + ||F_k^T * p_d||^2 (uniquement composantes x et y en 2D)
-        F_pg = np.dot(F_k, pts_g_h)
+        F_pg = np.dot(pts_g_h, F_k.T)
         pd_F = np.dot(pts_d_h, F_k)
         denom = (
             F_pg[:, 0] ** 2
@@ -158,10 +139,7 @@ def ransac_chapitre6(pcs_g, pcs_d, N_iterations=1000, t_seuil=1.0):
             + pd_F[:, 1] ** 2
         )
 
-        if (num == 0) :
-            d_i = 0
-        else :
-            d_i = num / denom
+        d_i = num / (denom + 1e-12)
 
 
         # Construction de l'ensemble consensus S_k
