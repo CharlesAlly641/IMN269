@@ -1,11 +1,12 @@
 import cv2
 import numpy as np
 
-def detecter_harris_points(img, max_points=500):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Finds the N strongest corners in a grayscale image using the Harris Corner Detector
+# Trouve tous les points d'intérêt (PI) dans chacune des images
+def detecteur_harris(img, max_points=500):
+    gray_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Identifie les N coins les plus marqués dans une image en niveaux de gris à l'aide du détecteur de Harris.
     pts = cv2.goodFeaturesToTrack(
-        gray,
+        gray_image,
         maxCorners=max_points,
         qualityLevel=0.01,
         minDistance=5,
@@ -14,21 +15,17 @@ def detecter_harris_points(img, max_points=500):
     )
     if pts is None:
         return np.array([], dtype=np.float32)
-    # Paired coordinates
+    # Paire les coordonnées 2 par 2
     return pts.reshape(-1, 2)
 
 
-def correlation_normalisee_fenetre(img1, img2, pts1, pts2, W=5, seuil=0.7):
-    """Calcule la Corrélation Normalisée (CN) entre tous les PIs
+def correlation_normalisee(img1, img2, pts1, pts2, W=5, seuil=0.7):
+    gray_img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    gray_img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
 
-    Conserve le correspondant qui maximise la CN si max > seuil.
-    """
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-
-    h, w = gray1.shape
-    pcs_initiales_g = []
-    pcs_initiales_d = []
+    h, w = gray_img1.shape
+    correspondant_g = []
+    correspondant_d = []
 
     for p1 in pts1:
         x1, y1 = int(p1[0]), int(p1[1])
@@ -37,8 +34,10 @@ def correlation_normalisee_fenetre(img1, img2, pts1, pts2, W=5, seuil=0.7):
             continue
 
         # Centrage de la fenêtre de corrélation sur le point (x1, y1)
-        f1 = np.float32(gray1[y1 - W : y1 + W + 1, x1 - W : x1 + W + 1])
-        norm_f1 = np.linalg.norm(f1 - np.mean(f1))
+        f1 = np.float32(gray_img1[y1 - W : y1 + W + 1, x1 - W : x1 + W + 1])
+        # Élimination des écarts de luminosité globale entre les deux images
+        f1c = f1 - np.mean(f1)
+        norm_f1 = np.linalg.norm(f1c)
         if norm_f1 == 0:
             continue
 
@@ -52,13 +51,15 @@ def correlation_normalisee_fenetre(img1, img2, pts1, pts2, W=5, seuil=0.7):
                 continue
 
             # Centrage de la fenêtre de corrélation sur le point (x2, y2)
-            f2 = np.float32(gray2[y2 - W : y2 + W + 1, x2 - W : x2 + W + 1])
-            norm_f2 = np.linalg.norm(f2 - np.mean(f2))
+            f2 = np.float32(gray_img2[y2 - W : y2 + W + 1, x2 - W : x2 + W + 1])
+            # Élimination des écarts de luminosité globale entre les deux images
+            f2c = f2 - np.mean(f2)
+            norm_f2 = np.linalg.norm(f2c)
             if norm_f2 == 0:
                 continue
 
-            # Calcul de la corrélation normalisée
-            score_cn = np.sum(f1 * f2) / (norm_f1 * norm_f2)
+            # Calcul de la corrélation normalisée, permet de ne pas dépendre de la moyenne des niveaux de gris.
+            score_cn = np.sum(f1c * f2c) / (norm_f1 * norm_f2)
 
             if score_cn > meilleur_score:
                 # Enregistrement du point et du score si c'est le meilleur qu'on a rencontré
@@ -67,15 +68,14 @@ def correlation_normalisee_fenetre(img1, img2, pts1, pts2, W=5, seuil=0.7):
 
         # Validation du meilleur score par le seuil
         if meilleur_score > seuil:
-            # On enregistre nos correspondants
-            pcs_initiales_g.append(p1)
-            pcs_initiales_d.append(meilleur_p2)
+            # On enregistre le couple de correspondant pour le point p1 actuel
+            correspondant_g.append(p1)
+            correspondant_d.append(meilleur_p2)
 
-    return np.array(pcs_initiales_g), np.array(pcs_initiales_d)
+    return np.array(correspondant_g), np.array(correspondant_d)
 
 
-def estimer_f_8points(pts_g, pts_d):
-    """Calcule F à l'aide de la SVD linéaire (Chapitre 5)"""
+def matrice_fondamentale(pts_g, pts_d):
     N = pts_g.shape[0]
     A = np.zeros((N, 9))
     # Construction de la matrice A n x 9 des coefficients du système
@@ -95,27 +95,27 @@ def estimer_f_8points(pts_g, pts_d):
         ]
 
     # Décomposition de A en valeurs singulières
-    _, _, V = np.linalg.svd(A)
+    V = np.linalg.svd(A).Vh
     # La plus petite valeur singulière est stockée à la dernière position
     F = V[-1].reshape(3, 3)
 
-    # Contrainte de rang 2 forcée
+    # Application de la contrainte de rang 2
     U, D, Vt = np.linalg.svd(F)
     D[2] = 0
     return np.dot(U, np.dot(np.diag(D), Vt))
 
 
-def ransac_chapitre6(pcs_g, pcs_d, N_iterations=1000, t_seuil=1.0):
-    """Pages 34-37 : Algorithme 6.1 d'estimation robuste de F par RANSAC"""
+def ransac(pcs_g, pcs_d, N_iterations=1000, t_seuil=1.0):
+    # Vérification du nombre de points (minimum 8 pour estimer F)
     num_pairs = pcs_g.shape[0]
     if num_pairs < 8:
         raise ValueError("Il faut au moins 8 paires initiales.")
 
     meilleur_S_k_taille = -1
-    meilleur_masque_inliers = None
+    meilleur_S_k = None
     meilleure_F_initiale = None
 
-    # Coordonnées homogènes pour le calcul des distances
+    # Coordonnées homogènes pour le calcul de la distance de sampson
     ones = np.ones((num_pairs, 1))
     pts_g_h = np.hstack((pcs_g, ones))
     pts_d_h = np.hstack((pcs_d, ones))
@@ -123,7 +123,7 @@ def ransac_chapitre6(pcs_g, pcs_d, N_iterations=1000, t_seuil=1.0):
     for k in range(N_iterations):
         # Choisir au hasard 8 paires et calculer F_k
         indices = np.random.choice(num_pairs, 8, replace=False)
-        F_k = estimer_f_8points(pcs_g[indices], pcs_d[indices])
+        F_k = matrice_fondamentale(pcs_g[indices], pcs_d[indices])
 
         # Calculer la distance de sampson
         # Numérateur : (p_d^T * F * p_g)
@@ -139,27 +139,42 @@ def ransac_chapitre6(pcs_g, pcs_d, N_iterations=1000, t_seuil=1.0):
             + pd_F[:, 1] ** 2
         )
 
-        d_i = num / (denom + 1e-12)
+        d_i = (num**2) / (denom + 1e-12)
 
 
-        # Construction de l'ensemble consensus S_k
-        masque_inliers = d_i < t_seuil
-        S_k_taille = np.sum(masque_inliers)
+        # Construction de l'ensemble consensus S_k (retrait des valeurs abberantes)
+        condition = d_i < t_seuil
+        S_k_taille = np.sum(condition) # True = 1, False = 0
 
         # On garde le S_k contenant le plus d'éléments
         if S_k_taille > meilleur_S_k_taille:
             meilleur_S_k_taille = S_k_taille
-            meilleur_masque_inliers = masque_inliers
+            meilleur_S_k = condition
             meilleure_F_initiale = F_k
 
     # Séparation finale des données aberrantes et régulières
-    inliers_g = pcs_g[meilleur_masque_inliers]
-    inliers_d = pcs_d[meilleur_masque_inliers]
+    regulier_g = pcs_g[meilleur_S_k]
+    regulier_d = pcs_d[meilleur_S_k]
+    abberant_g = pcs_g[~meilleur_S_k]
+    abberant_d = pcs_d[~meilleur_S_k]
 
-    outliers_g = pcs_g[~meilleur_masque_inliers]
-    outliers_d = pcs_d[~meilleur_masque_inliers]
+    # Réévaluer F avec toutes les mises en corespondance régulières
+    F_optimisee = matrice_fondamentale(regulier_g, regulier_d)
 
-    # Réévaluer F avec toutes les PCs régulières
-    F_optimisee = estimer_f_8points(inliers_g, inliers_d)
+    return F_optimisee, (regulier_g, regulier_d), (abberant_g, abberant_d)
 
-    return F_optimisee, (inliers_g, inliers_d), (outliers_g, outliers_d)
+# Applications sur les images
+img_g = cv2.imread("image_gauche.jpg")
+img_d = cv2.imread("image_droite.jpg")
+
+pts_g = detecteur_harris(img_g, 500)
+pts_d = detecteur_harris(img_d, 500)
+
+pcs_g, pcs_d =  correlation_normalisee(img_g, img_d, pts_g, pts_d, 5, 0.7)
+
+F, (reguliers_g, reguliers_d), (abberants_g, abberants_d) = ransac(pcs_g, pcs_d, 1000, 1.0)
+
+print("Matrice fondamentale F :")
+print(F)
+print(f"MC régulières : {len(reguliers_g)}")
+print(f"MC aberrantes : {len(aberrants_g)}")
