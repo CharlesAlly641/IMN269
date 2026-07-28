@@ -1,10 +1,9 @@
 import cv2
 import numpy as np
 
-# Trouve tous les points d'intérêt (PI) dans chacune des images
+
 def detecteur_harris(img, max_points=500, min_distance=5):
     gray_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Identifie les N coins les plus marqués dans une image en niveaux de gris à l'aide du détecteur de Harris.
     pts = cv2.goodFeaturesToTrack(
         gray_image,
         maxCorners=max_points,
@@ -15,11 +14,10 @@ def detecteur_harris(img, max_points=500, min_distance=5):
     )
     if pts is None:
         return np.array([], dtype=np.float32)
-    # Paire les coordonnées 2 par 2
     return pts.reshape(-1, 2)
 
 
-def correlation_normalisee(img1, img2, pts1, pts2, W=7, seuil=0.75):
+def correlation_normalisee(img1, img2, pts1, pts2, W, seuil):
     gray_img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
     gray_img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
 
@@ -105,7 +103,7 @@ def matrice_fondamentale(pts_g, pts_d):
     return np.dot(U, np.dot(np.diag(D), Vt))
 
 
-def ransac(pcs_g, pcs_d, N_iterations=2000, t_seuil=0.5):
+def ransac(pcs_g, pcs_d, N_iterations, t_seuil):
     # Vérification du nombre de points (minimum 8 pour estimer F)
     num_pairs = pcs_g.shape[0]
     if num_pairs < 8:
@@ -141,7 +139,6 @@ def ransac(pcs_g, pcs_d, N_iterations=2000, t_seuil=0.5):
 
         d_i = (num**2) / (denom + 1e-12)
 
-
         # Construction de l'ensemble consensus S_k (retrait des valeurs abberantes)
         condition = d_i < t_seuil
         S_k_taille = np.sum(condition) # True = 1, False = 0
@@ -163,9 +160,8 @@ def ransac(pcs_g, pcs_d, N_iterations=2000, t_seuil=0.5):
 
     return F_optimisee, (regulier_g, regulier_d), (abberant_g, abberant_d)
 
-def dessiner_correspondances(img1, img2, pts1, pts2, couleur, epaisseur=1):
-    """Colle les deux images côte à côte et trace une ligne entre chaque
-    paire de points correspondants."""
+
+def dessiner_correspondances(img1, img2, pts1, pts2, couleur, epaisseur =1):
     h1, w1 = img1.shape[:2]
     h2, w2 = img2.shape[:2]
     h = max(h1, h2)
@@ -183,84 +179,88 @@ def dessiner_correspondances(img1, img2, pts1, pts2, couleur, epaisseur=1):
 
     return canvas
 
+def calculer_erreur_epipolaire(F, pts_g, pts_d):
+    """Calcule l'erreur de Sampson pour chaque paire de points."""
+    N = len(pts_g)
+    ones = np.ones((N, 1))
+    pts_g_h = np.hstack([pts_g, ones])
+    pts_d_h = np.hstack([pts_d, ones])
 
-# Calcule l'erreur épipolaire |x_d^T F x_g| pour chaque paire de points.
-# Une erreur proche de 0 indique que la paire respecte bien la contrainte
-# géométrique imposée par F ; une erreur élevée signale une correspondance
-# potentiellement fausse malgré son acceptation par RANSAC.
-def erreur_epipolaire(F, pts_g, pts_d):
-    ones = np.ones((len(pts_g), 1))
-    pg_h = np.hstack([pts_g, ones])
-    pd_h = np.hstack([pts_d, ones])
-    erreurs = np.abs(np.sum((pd_h @ F) * pg_h, axis=1))
-    return erreurs
+    numerateur = np.abs(np.sum((pts_d_h @ F) * pts_g_h, axis=1))
+
+    F_pg = pts_g_h @ F.T
+    norme_F_pg = F_pg[:, 0]**2 + F_pg[:, 1]**2
+
+    Ft_pd = pts_d_h @ F
+    norme_Ft_pd = Ft_pd[:, 0]**2 + Ft_pd[:, 1]**2
+
+    denominateur = np.sqrt(norme_F_pg + norme_Ft_pd)
+    denominateur = np.maximum(denominateur, 1e-12)
+
+    return numerateur / denominateur
 
 
 if __name__ == "__main__" :
-    # Applications sur les images
+
     img_g = cv2.imread("visage/charles/left_01.jpg")
     img_d = cv2.imread("visage/charles/right_01.jpg")
-    # Coordonnées obtenues par detecter_visage.py
-    roi_g = (766, 142, 544, 544)   # x, y, w, h
-    roi_d = (603, 144, 571, 571)
 
+    # Coordonnées obtenues par detecter_visage.py afin de restreindre la mise en correspondance au visage
+    roi_g = (766, 142, 544, 544)
+    roi_d = (603, 144, 571, 571)
     xg, yg, wg, hg = roi_g
     xd, yd, wd, hd = roi_d
 
-    # On retire environ 20% du haut de la ROI pour exclure la zone de la
-    # racine des cheveux, qui génère des faux appariements (texture
-    # répétitive des mèches de cheveux) même après le filtrage RANSAC.
-    recul_haut = 0.20
-    yg2 = yg + int(hg * recul_haut)
-    hg2 = hg - int(hg * recul_haut)
-    yd2 = yd + int(hd * recul_haut)
-    hd2 = hd - int(hd * recul_haut)
+    img_g_visage = img_g[yg:yg+hg, xg:xg+wg]
+    img_d_visage = img_d[yd:yd+hd, xd:xd+wd]
 
-    img_g_visage = img_g[yg2:yg2+hg2, xg:xg+wg]
-    img_d_visage = img_d[yd2:yd2+hd2, xd:xd+wd]
-
-    # min_distance augmenté à 12 (au lieu de 5 par défaut) pour espacer
-    # davantage les points détectés et réduire les échanges entre points
-    # voisins qui se ressemblent (ex. le long d'une ligne de cheveux).
+    # Trouver tous les points d'intérêts dans chacune des images
     pts_g = detecteur_harris(img_g_visage, max_points=800, min_distance=12)
     pts_d = detecteur_harris(img_d_visage, max_points=800, min_distance=12)
     print(f"Points détectés - gauche : {len(pts_g)}, droite : {len(pts_d)}")
 
-    # Seuil de corrélation resserré à 0.75 (au lieu de 0.7) pour réduire
-    # les faux positifs sur les zones peu texturées du visage.
+    # Calculer la corrélation normalisée
     pcs_g, pcs_d = correlation_normalisee(img_g_visage, img_d_visage, pts_g, pts_d, W=7, seuil=0.75)
     print(f"Correspondances avant RANSAC : {len(pcs_g)}")
 
+    # Vérifier qu'on a bien 8 correspondances minimalement
     if len(pcs_g) < 8:
         raise RuntimeError(
-            f"Seulement {len(pcs_g)} correspondances trouvées (minimum 8 requis). "
-            "Baissez le seuil de corrélation ou augmentez max_points.")
+            f"Seulement {len(pcs_g)} correspondances trouvées (minimum 8 requis). ")
 
-    # t_seuil resserré à 0.5 (au lieu de 1.0) pour que RANSAC soit plus
-    # sélectif sur la cohérence géométrique des points retenus.
+    # Calculer la matrice fondamentale et les correspondances
     F, (reguliers_g, reguliers_d), (abberants_g, abberants_d) = ransac(pcs_g, pcs_d, N_iterations=2000, t_seuil=0.5)
 
-    print("Matrice fondamentale F :")
-    print(F)
+    print(f"Matrice fondamentale F : {F}")
+
+    # Affichage de toutes les correspondances
+    erreur_reguliers = calculer_erreur_epipolaire(F, reguliers_g, reguliers_d)
+    print("\n--- Liste de toutes les correspondances validées par RANSAC ---")
     print(f"MC régulières : {len(reguliers_g)}")
+    for i, (pt_g, pt_d) in enumerate(zip(reguliers_g, reguliers_d)):
+        # Arrondir les coordonnées pour que ce soit lisible (2 décimales)
+        xg, yg = pt_g
+        xd, yd = pt_d
+
+        print(
+            f"Correspondance n°{i + 1:3d} : Gauche({xg:7.2f}, {yg:7.2f}) <-> Droite({xd:7.2f}, {yd:7.2f})")
+        print(f"Erreur epipolaire : {erreur_reguliers[i]}\n")
+
+    erreur_abberants = calculer_erreur_epipolaire(F, abberants_g, abberants_d)
+    print("\n--- Liste de toutes les correspondances rejetées par RANSAC ---")
     print(f"MC aberrantes : {len(abberants_g)}")
+    for i, (pt_g, pt_d) in enumerate(zip(abberants_g, abberants_d)):
+        # Arrondir les coordonnées pour que ce soit lisible (2 décimales)
+        xg, yg = pt_g
+        xd, yd = pt_d
 
-    # Diagnostic quantitatif : permet de repérer les correspondances
-    # régulières qui restent malgré tout suspectes (erreur élevée),
-    # au lieu de se fier uniquement à l'inspection visuelle.
-    erreurs = erreur_epipolaire(F, reguliers_g, reguliers_d)
-    print(f"\nErreur épipolaire moyenne : {erreurs.mean():.4f}")
-    print(f"Erreur épipolaire max : {erreurs.max():.4f}")
+        print(
+            f"Correspondance n°{i + 1:3d} : Gauche({xg:7.2f}, {yg:7.2f}) <-> Droite({xd:7.2f}, {yd:7.2f})")
+        print(f"Erreur epipolaire : {erreur_abberants[i]}\n")
 
-    indices_tries = np.argsort(erreurs)[::-1]
-    print("\nLes 5 points réguliers avec la plus grande erreur (candidats suspects) :")
-    for i in indices_tries[:5]:
-        print(f"  gauche {reguliers_g[i]} <-> droite {reguliers_d[i]}, erreur = {erreurs[i]:.4f}")
-
-    # Visualisation (sur les images rognées)
-    img_regulieres = dessiner_correspondances(img_g_visage, img_d_visage, reguliers_g, reguliers_d, couleur=(0, 255, 0))
-    img_aberrantes = dessiner_correspondances(img_g_visage, img_d_visage, abberants_g, abberants_d, couleur=(0, 0, 255))
+    # Visualisation des points aberrants et retenus sur l'image du visage
+    img_regulieres = dessiner_correspondances(img_g_visage, img_d_visage, reguliers_g, reguliers_d, (0,255,0))
+    img_aberrantes = dessiner_correspondances(img_g_visage, img_d_visage, abberants_g, abberants_d, (0,0,255))
 
     cv2.imwrite("correspondances_regulieres.png", img_regulieres)
     cv2.imwrite("correspondances_aberrantes.png", img_aberrantes)
-    print("\nImages sauvegardées : correspondances_regulieres.png, correspondances_aberrantes.png")

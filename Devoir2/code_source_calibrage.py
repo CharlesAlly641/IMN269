@@ -147,70 +147,32 @@ def stereo_calibrate(mtx1, dist1, mtx2, dist2, frames_1, frames_2):
 
 # ********* Ajout du print des matrices *********
 def print_stereo_results(mtx1, mtx2, R, T, E, F, ret_stereo):
-    """Affiche tous les résultats du calibrage stéréo"""
-    print("\n" + "=" * 60)
-    print("RÉSULTATS DU CALIBRAGE STÉRÉO")
-    print("=" * 60)
+    """Affiche les résultats du calibrage stéréo"""
 
-    # 1. Erreur de reprojection
+    # Erreur de reprojection
     print(f"\nErreur de reprojection stéréo (RMS): {ret_stereo:.4f} pixels")
 
-    # 2. Matrices intrinsèques
-    print("\nMatrice intrinsèque - Caméra GAUCHE:")
+    # Matrices intrinsèques
+    print("\nMatrice intrinsèque (Caméra gauche):")
     print(mtx1)
-    print("\nMatrice intrinsèque - Caméra DROITE:")
+    print("\nMatrice intrinsèque (Caméra droite):")
     print(mtx2)
 
-    # 2. Matrice fondamentale
+    # Matrice fondamentale
     print("\nMatrice fondamentale F:")
     print(F)
 
-    # 3. Matrice essentielle
+    # Matrice essentielle
     print("\nMatrice essentielle E:")
     print(E)
 
-    # 4. Matrice de rotation
+    # Matrice de rotation
     print("\nMatrice de rotation R (caméra droite par rapport à gauche):")
     print(R)
 
-    # 5. Vecteur de translation
+    # Vecteur de translation
     print("\nVecteur de translation T (caméra droite par rapport à gauche, en mm):")
     print(T.ravel())
-
-    # 6. Distance entre les caméras (baseline)
-    baseline = np.linalg.norm(T)
-    print(f"\nDistance entre les caméras (baseline): {baseline:.2f} mm")
-
-    # 7. Angles d'Euler (rotation en degrés)
-    print("\nAngles d'Euler (degrés):")
-    sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
-    singular = sy < 1e-6
-
-    if not singular:
-        x = np.arctan2(R[2, 1], R[2, 2]) * 180 / np.pi
-        y = np.arctan2(-R[2, 0], sy) * 180 / np.pi
-        z = np.arctan2(R[1, 0], R[0, 0]) * 180 / np.pi
-    else:
-        x = np.arctan2(-R[1, 2], R[1, 1]) * 180 / np.pi
-        y = np.arctan2(-R[2, 0], sy) * 180 / np.pi
-        z = 0
-
-    print(f"  Rotation en X (tilt): {x:.2f}°")
-    print(f"  Rotation en Y (pan):  {y:.2f}°")
-    print(f"  Rotation en Z (roll): {z:.2f}°")
-
-    # 8. Évaluation de la qualité
-    print("\nÉvaluation de la qualité:")
-    if ret_stereo < 1.0:
-        print("  EXCELLENT: Erreur < 1 pixel")
-    elif ret_stereo < 2.0:
-        print("  BON: Erreur < 2 pixels")
-    elif ret_stereo < 3.0:
-        print("  MOYEN: Erreur < 3 pixels")
-    else:
-        print("  MÉDIOCRE: Erreur > 3 pixels")
-
-    print("=" * 60)
 
 if __name__ == "__main__":
     mtx1, dist1, rvecs1, tvecs1, ret1 = calibrate_camera(images_folder='calib_images/calib_images_vendredi_partiel/left_*.jpg')
@@ -219,11 +181,15 @@ if __name__ == "__main__":
     R, T, corner_point, ret_stereo, E, F = stereo_calibrate(mtx1, dist1, mtx2, dist2, 'calib_images/calib_images_vendredi_partiel/left_*.jpg',
                                           'calib_images/calib_images_vendredi_partiel/right_*.jpg')
 
+    #mtx1, dist1, rvecs1, tvecs1, ret1 = calibrate_camera(images_folder='calib_images/calib_images_udes/left_*.jpg')
+    #mtx2, dist2, rvecs2, tvecs2, ret2 = calibrate_camera(images_folder='calib_images/calib_images_udes/right_*.jpg')
+
+    #R, T, corner_point, ret_stereo, E, F = stereo_calibrate(mtx1, dist1, mtx2, dist2, 'calib_images/calib_images_udes/left_*.jpg',
+    #                                      'calib_images/calib_images_udes/right_*.jpg')
+
     transformation_matrix = np.empty((4, 4))
     transformation_matrix[:3, :3] = R
     transformation_matrix[:3, 3] = T.T[0]
     transformation_matrix[3, :] = [0, 0, 0, 1]
 
     location_cam2 = np.dot(transformation_matrix, [[0], [0], [0], [1]])
-
-    print("location camera 2 [x,y,z]: ", location_cam2[:3].T)
