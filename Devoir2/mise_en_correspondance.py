@@ -1,8 +1,10 @@
 import cv2
 import numpy as np
-
+from detecter_visage import detecter_visage
 
 def detecteur_harris(img, max_points=500, min_distance=5):
+    """Applique le détecteur de Harris afin de trouver tous les points d'intérêt (PI)
+    dans chacune des images"""
     gray_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     pts = cv2.goodFeaturesToTrack(
         gray_image,
@@ -18,12 +20,13 @@ def detecteur_harris(img, max_points=500, min_distance=5):
 
 
 def correlation_normalisee(img1, img2, pts1, pts2, W, seuil):
+    """Pour tous les PIs de l'image de gauche, calcule la corrélation normalisée avec tous les
+    PIs de l'image de droite et conserve comme correspondant le PI de l’image droite qui maximise la CN."""
     gray_img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
     gray_img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
 
     h, w = gray_img1.shape
-    correspondant_g = []
-    correspondant_d = []
+    meilleures_correspondances = {}
 
     for p1 in pts1:
         x1, y1 = int(p1[0]), int(p1[1])
@@ -67,13 +70,20 @@ def correlation_normalisee(img1, img2, pts1, pts2, W, seuil):
         # Validation du meilleur score par le seuil
         if meilleur_score > seuil:
             # On enregistre le couple de correspondant pour le point p1 actuel
-            correspondant_g.append(p1)
-            correspondant_d.append(meilleur_p2)
+            cle = tuple(meilleur_p2)
+            # On ne garde ce point droit que s'il n'a pas déjà un meilleur candidat
+            if cle not in meilleures_correspondances or meilleur_score > meilleures_correspondances[cle][0]:
+                meilleures_correspondances[cle] = (meilleur_score, p1)
+
+    # Reconstruction des listes finales à partir du dictionnaire (un seul p1 par p2)
+    correspondant_g = [p1 for (_, p1) in meilleures_correspondances.values()]
+    correspondant_d = [np.array(cle) for cle in meilleures_correspondances.keys()]
 
     return np.array(correspondant_g), np.array(correspondant_d)
 
 
 def matrice_fondamentale(pts_g, pts_d):
+    """Calcule la matrice fondamentale"""
     N = pts_g.shape[0]
     A = np.zeros((N, 9))
     # Construction de la matrice A n x 9 des coefficients du système
@@ -104,6 +114,7 @@ def matrice_fondamentale(pts_g, pts_d):
 
 
 def ransac(pcs_g, pcs_d, N_iterations, t_seuil):
+    """Estime la valeur de la matrice fondamentale F et la mise en correspondance par Ransac"""
     # Vérification du nombre de points (minimum 8 pour estimer F)
     num_pairs = pcs_g.shape[0]
     if num_pairs < 8:
@@ -113,31 +124,13 @@ def ransac(pcs_g, pcs_d, N_iterations, t_seuil):
     meilleur_S_k = None
     meilleure_F_initiale = None
 
-    # Coordonnées homogènes pour le calcul de la distance de sampson
-    ones = np.ones((num_pairs, 1))
-    pts_g_h = np.hstack((pcs_g, ones))
-    pts_d_h = np.hstack((pcs_d, ones))
-
     for k in range(N_iterations):
         # Choisir au hasard 8 paires et calculer F_k
         indices = np.random.choice(num_pairs, 8, replace=False)
         F_k = matrice_fondamentale(pcs_g[indices], pcs_d[indices])
 
         # Calculer la distance de sampson
-        # Numérateur : (p_d^T * F * p_g)
-        num = np.sum(np.dot(pts_d_h, F_k) * pts_g_h, axis=1)
-
-        # Dénominateur : ||F_k * p_g||^2 + ||F_k^T * p_d||^2 (uniquement composantes x et y en 2D)
-        F_pg = np.dot(pts_g_h, F_k.T)
-        pd_F = np.dot(pts_d_h, F_k)
-        denom = (
-            F_pg[:, 0] ** 2
-            + F_pg[:, 1] ** 2
-            + pd_F[:, 0] ** 2
-            + pd_F[:, 1] ** 2
-        )
-
-        d_i = (num**2) / (denom + 1e-12)
+        d_i = distance_sampson(F_k, pcs_g, pcs_d)
 
         # Construction de l'ensemble consensus S_k (retrait des valeurs abberantes)
         condition = d_i < t_seuil
@@ -161,7 +154,26 @@ def ransac(pcs_g, pcs_d, N_iterations, t_seuil):
     return F_optimisee, (regulier_g, regulier_d), (abberant_g, abberant_d)
 
 
-def dessiner_correspondances(img1, img2, pts1, pts2, couleur, epaisseur =1):
+def distance_sampson(F, pts_g, pts_d):
+    """Calcule la distance de Sampson pour chaque paire de points.
+    Estime l'erreur de reprojection par rapport à la contrainte épipolaire."""
+    N = len(pts_g)
+    ones = np.ones((N, 1))
+    pts_g_h = np.hstack([pts_g, ones])
+    pts_d_h = np.hstack([pts_d, ones])
+
+    num = np.sum(np.dot(pts_d_h, F) * pts_g_h, axis=1)
+
+    F_pg = np.dot(pts_g_h, F.T)
+    pd_F = np.dot(pts_d_h, F)
+    denom = F_pg[:, 0]**2 + F_pg[:, 1]**2 + pd_F[:, 0]**2 + pd_F[:, 1]**2
+
+    return (num**2) / (denom + 1e-12)
+
+
+def dessiner_correspondances(img1, img2, pts1, pts2, couleur, epaisseur=1):
+    """Colle les deux images côte à côte et trace une ligne entre chaque
+    paire de points correspondants."""
     h1, w1 = img1.shape[:2]
     h2, w2 = img2.shape[:2]
     h = max(h1, h2)
@@ -179,37 +191,17 @@ def dessiner_correspondances(img1, img2, pts1, pts2, couleur, epaisseur =1):
 
     return canvas
 
-def calculer_erreur_epipolaire(F, pts_g, pts_d):
-    """Calcule l'erreur de Sampson pour chaque paire de points."""
-    N = len(pts_g)
-    ones = np.ones((N, 1))
-    pts_g_h = np.hstack([pts_g, ones])
-    pts_d_h = np.hstack([pts_d, ones])
-
-    numerateur = np.abs(np.sum((pts_d_h @ F) * pts_g_h, axis=1))
-
-    F_pg = pts_g_h @ F.T
-    norme_F_pg = F_pg[:, 0]**2 + F_pg[:, 1]**2
-
-    Ft_pd = pts_d_h @ F
-    norme_Ft_pd = Ft_pd[:, 0]**2 + Ft_pd[:, 1]**2
-
-    denominateur = np.sqrt(norme_F_pg + norme_Ft_pd)
-    denominateur = np.maximum(denominateur, 1e-12)
-
-    return numerateur / denominateur
-
 
 if __name__ == "__main__" :
 
     img_g = cv2.imread("visage/charles/left_01.jpg")
     img_d = cv2.imread("visage/charles/right_01.jpg")
 
-    # Coordonnées obtenues par detecter_visage.py afin de restreindre la mise en correspondance au visage
-    roi_g = (766, 142, 544, 544)
-    roi_d = (603, 144, 571, 571)
-    xg, yg, wg, hg = roi_g
-    xd, yd, wd, hd = roi_d
+    # Restreint la mise en correspondance au visage
+    region_gauche = detecter_visage(img_g, marge=0.3)
+    region_droite = detecter_visage(img_d, marge=0.3)
+    xg, yg, wg, hg = region_gauche
+    xd, yd, wd, hd = region_droite
 
     img_g_visage = img_g[yg:yg+hg, xg:xg+wg]
     img_d_visage = img_d[yd:yd+hd, xd:xd+wd]
@@ -223,18 +215,13 @@ if __name__ == "__main__" :
     pcs_g, pcs_d = correlation_normalisee(img_g_visage, img_d_visage, pts_g, pts_d, W=7, seuil=0.75)
     print(f"Correspondances avant RANSAC : {len(pcs_g)}")
 
-    # Vérifier qu'on a bien 8 correspondances minimalement
-    if len(pcs_g) < 8:
-        raise RuntimeError(
-            f"Seulement {len(pcs_g)} correspondances trouvées (minimum 8 requis). ")
-
     # Calculer la matrice fondamentale et les correspondances
     F, (reguliers_g, reguliers_d), (abberants_g, abberants_d) = ransac(pcs_g, pcs_d, N_iterations=2000, t_seuil=0.5)
 
     print(f"Matrice fondamentale F : {F}")
 
     # Affichage de toutes les correspondances
-    erreur_reguliers = calculer_erreur_epipolaire(F, reguliers_g, reguliers_d)
+    erreur_reguliers = distance_sampson(F, reguliers_g, reguliers_d)
     print("\n--- Liste de toutes les correspondances validées par RANSAC ---")
     print(f"MC régulières : {len(reguliers_g)}")
     for i, (pt_g, pt_d) in enumerate(zip(reguliers_g, reguliers_d)):
@@ -243,10 +230,10 @@ if __name__ == "__main__" :
         xd, yd = pt_d
 
         print(
-            f"Correspondance n°{i + 1:3d} : Gauche({xg:7.2f}, {yg:7.2f}) <-> Droite({xd:7.2f}, {yd:7.2f})")
+            f"Correspondance n°{i + 1:3d} : Gauche({xg:7.2f}, {yg:7.2f}), Droite({xd:7.2f}, {yd:7.2f})")
         print(f"Erreur epipolaire : {erreur_reguliers[i]}\n")
 
-    erreur_abberants = calculer_erreur_epipolaire(F, abberants_g, abberants_d)
+    erreur_abberants = distance_sampson(F, abberants_g, abberants_d)
     print("\n--- Liste de toutes les correspondances rejetées par RANSAC ---")
     print(f"MC aberrantes : {len(abberants_g)}")
     for i, (pt_g, pt_d) in enumerate(zip(abberants_g, abberants_d)):
@@ -255,10 +242,10 @@ if __name__ == "__main__" :
         xd, yd = pt_d
 
         print(
-            f"Correspondance n°{i + 1:3d} : Gauche({xg:7.2f}, {yg:7.2f}) <-> Droite({xd:7.2f}, {yd:7.2f})")
+            f"Correspondance n°{i + 1:3d} : Gauche({xg:7.2f}, {yg:7.2f}), Droite({xd:7.2f}, {yd:7.2f})")
         print(f"Erreur epipolaire : {erreur_abberants[i]}\n")
 
-    # Visualisation des points aberrants et retenus sur l'image du visage
+    # Visualisation des points aberrants et validés sur l'image du visage
     img_regulieres = dessiner_correspondances(img_g_visage, img_d_visage, reguliers_g, reguliers_d, (0,255,0))
     img_aberrantes = dessiner_correspondances(img_g_visage, img_d_visage, abberants_g, abberants_d, (0,0,255))
 
