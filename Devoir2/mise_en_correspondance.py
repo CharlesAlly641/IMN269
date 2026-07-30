@@ -2,9 +2,16 @@ import cv2
 import numpy as np
 from detecter_visage import detecter_visage
 
-def detecteur_harris(img, max_points=500, min_distance=5):
+def detecteur_harris(img, region, max_points=500, min_distance=5):
     """Applique le détecteur de Harris afin de trouver tous les points d'intérêt (PI)
     dans chacune des images"""
+    # Restreindre le détecteur des points d'intérêts au visage
+    x, y, w, h = region
+
+    # Créer un masque de la même taille que l'image, blanc uniquement sur le visage
+    mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    mask[y:y + h, x:x + w] = 255
+
     gray_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     pts = cv2.goodFeaturesToTrack(
         gray_image,
@@ -12,7 +19,8 @@ def detecteur_harris(img, max_points=500, min_distance=5):
         qualityLevel=0.01,
         minDistance=min_distance,
         useHarrisDetector=True,
-        k=0.04
+        k=0.04,
+        mask = mask
     )
     if pts is None:
         return np.array([], dtype=np.float32)
@@ -200,19 +208,14 @@ if __name__ == "__main__" :
     # Restreint la mise en correspondance au visage
     region_gauche = detecter_visage(img_g, marge=0.3)
     region_droite = detecter_visage(img_d, marge=0.3)
-    xg, yg, wg, hg = region_gauche
-    xd, yd, wd, hd = region_droite
-
-    img_g_visage = img_g[yg:yg+hg, xg:xg+wg]
-    img_d_visage = img_d[yd:yd+hd, xd:xd+wd]
 
     # Trouver tous les points d'intérêts dans chacune des images
-    pts_g = detecteur_harris(img_g_visage, max_points=800, min_distance=12)
-    pts_d = detecteur_harris(img_d_visage, max_points=800, min_distance=12)
+    pts_g = detecteur_harris(img_g, region_gauche, max_points=800, min_distance=12)
+    pts_d = detecteur_harris(img_d, region_droite, max_points=800, min_distance=12)
     print(f"Points détectés - gauche : {len(pts_g)}, droite : {len(pts_d)}")
 
     # Calculer la corrélation normalisée
-    pcs_g, pcs_d = correlation_normalisee(img_g_visage, img_d_visage, pts_g, pts_d, W=7, seuil=0.75)
+    pcs_g, pcs_d = correlation_normalisee(img_g, img_d, pts_g, pts_d, W=7, seuil=0.75)
     print(f"Correspondances avant RANSAC : {len(pcs_g)}")
 
     # Calculer la matrice fondamentale et les correspondances
@@ -246,8 +249,8 @@ if __name__ == "__main__" :
         print(f"Erreur epipolaire : {erreur_abberants[i]}\n")
 
     # Visualisation des points aberrants et validés sur l'image du visage
-    img_regulieres = dessiner_correspondances(img_g_visage, img_d_visage, reguliers_g, reguliers_d, (0,255,0))
-    img_aberrantes = dessiner_correspondances(img_g_visage, img_d_visage, abberants_g, abberants_d, (0,0,255))
+    img_regulieres = dessiner_correspondances(img_g, img_d, reguliers_g, reguliers_d, (0,255,0))
+    img_aberrantes = dessiner_correspondances(img_g, img_d, abberants_g, abberants_d, (0,0,255))
 
     cv2.imwrite("correspondances_regulieres.png", img_regulieres)
     cv2.imwrite("correspondances_aberrantes.png", img_aberrantes)
