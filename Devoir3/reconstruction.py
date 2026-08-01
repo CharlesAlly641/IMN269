@@ -2,20 +2,24 @@ import cv2
 import numpy as np
 
 def triangulation(pt_g, pt_d, R, T, M_int_g, M_int_d):
-    # Matrices de projection avec la caméra gauche considéré comme l'origine
-    P1 = np.dot(M_int_g, np.hstack((np.eye(3), np.zeros((3, 1)))))
-    RT = np.hstack((R, T.reshape(3, 1)))
-    P2 = np.dot(M_int_d, RT)
+    pg_h = np.array([pt_g[0], pt_g[1], 1.0])
+    pd_h = np.array([pt_d[0], pt_d[1], 1.0])
 
-    pts_g = np.array([pt_g], dtype=np.float32)
-    pts_d = np.array([pt_d], dtype=np.float32)
+    pg_dir = np.linalg.inv(M_int_g) @ pg_h
+    pd_dir = np.linalg.inv(M_int_d) @ pd_h
 
-    # Triangulation pour trouver le point projeté
-    pts_4d_homog = cv2.triangulatePoints(P1, P2, pts_g.T, pts_d.T)
+    Rt_pd = R.T @ pd_dir
+    n = np.cross(pg_dir, Rt_pd)
 
-    # Conversion des points 4d homogènes dans l'espace euclidien 3D
-    pts_3d = pts_4d_homog[:3, :] / pts_4d_homog[3, :]
-    return pts_3d.T[0]
+    Od = -R.T @ T   # <-- centre optique droit exprimé dans le repère gauche (correction)
+
+    A = np.column_stack([pg_dir, -Rt_pd, n])
+    b, a, c = np.linalg.solve(A, Od)   # <-- Od à la place de T
+
+    Pg = b * pg_dir
+    Ps = Pg + (c / 2) * n
+
+    return Ps
 
 
 if __name__ == "__main__":
