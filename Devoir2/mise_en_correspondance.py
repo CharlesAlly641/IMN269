@@ -1,14 +1,41 @@
 import cv2
 import numpy as np
-from detecter_visage import detecter_visage
+
+def detecter_visage(img, marge=0.3):
+    """Détecte le plus grand visage dans l'image et retourne une boîte
+    (x, y, w, h) avec une marge ajoutée autour.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    visages = face_cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(80, 80)
+    )
+
+    x, y, w, h = visages[0]
+
+    # Ajout d'une marge autour du visage détecté
+    mx = int(w * marge)
+    my = int(h * marge)
+
+    h_img, w_img = img.shape[:2]
+    x0 = max(0, x - mx)
+    y0 = max(0, y - my)
+    x1 = min(w_img, x + w + mx)
+    y1 = min(h_img, y + h + my)
+
+    return x0, y0, x1 - x0, y1 - y0
 
 def detecteur_harris(img, region, max_points=500, min_distance=5):
-    """Applique le détecteur de Harris afin de trouver tous les points d'intérêt (PI)
+    """Applique le détecteur de Harris afin de trouver tous les points d'intérêt
     dans chacune des images"""
-    # Restreindre le détecteur des points d'intérêts au visage
+    # Restreindre le détecteur des points d'intérêts à la région du visage
     x, y, w, h = region
 
-    # Créer un masque de la même taille que l'image, blanc uniquement sur le visage
+    # Créer un masque de la même taille que l'image, laisse passer seulement le visage
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask[y:y + h, x:x + w] = 255
 
@@ -79,7 +106,7 @@ def correlation_normalisee(img1, img2, pts1, pts2, W, seuil):
         if meilleur_score > seuil:
             # On enregistre le couple de correspondant pour le point p1 actuel
             cle = tuple(meilleur_p2)
-            # On ne garde ce point droit que s'il n'a pas déjà un meilleur candidat
+            # On ne garde ce point droit que s'il n'a pas déjà un meilleur candidat (Contrainte d'unicité)
             if cle not in meilleures_correspondances or meilleur_score > meilleures_correspondances[cle][0]:
                 meilleures_correspondances[cle] = (meilleur_score, p1)
 
@@ -91,7 +118,7 @@ def correlation_normalisee(img1, img2, pts1, pts2, W, seuil):
 
 
 def matrice_fondamentale(pts_g, pts_d):
-    """Calcule la matrice fondamentale"""
+    """Calcule la matrice fondamentale à l'aide de l'algorithme des 8 points"""
     N = pts_g.shape[0]
     A = np.zeros((N, 9))
     # Construction de la matrice A n x 9 des coefficients du système

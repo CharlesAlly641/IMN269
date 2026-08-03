@@ -1,224 +1,192 @@
-"""
-Utilisation :
-    python calibrage_stereo.py --left "calib_images/left_*.jpg" --right "calib_images/right_*.jpg"
-"""
+# Utilisation d'un code source existant, disponible à l'adresse suivante :
+# https://github.com/a-pijpaert/python_stereo_camera_calibrate/blob/main/MRE_calibration.py
+# Tous les endroits qui ont été modifiés par rapport à la version originale a un commentaire
+# avec la mention "Modification : ..."
 
-import argparse
-import glob
-import os
-import sys
-
-import numpy as np
 import cv2
+import numpy as np
+import glob
 
-# Paramètres du damier
-CHECKERBOARD = (9, 6)     # nombre de coins INTERNES (largeur, hauteur) -> 10x7 cases = 70 cases
-SQUARE_SIZE_MM = 35.0     # taille réelle d'une case, mesurée après impression (mm)
-
-# Coefficients de distorsion fournis dans l'énoncé : k1 = k2 = 0
-FIX_DISTORTION_TO_ZERO = True
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Calibrage stéréo avec OpenCV")
-    parser.add_argument("--left", type=str, default="calib_images/left_*.jpg",
-                         help="Motif glob pour les images de la caméra gauche")
-    parser.add_argument("--right", type=str, default="calib_images/right_*.jpg",
-                         help="Motif glob pour les images de la caméra droite")
-    parser.add_argument("--out", type=str, default="calibration_stereo.npz",
-                         help="Fichier de sortie pour sauvegarder les résultats")
-    parser.add_argument("--show", action="store_true",
-                         help="Afficher la détection des coins sur chaque image")
-    return parser.parse_args()
+rows = 6  # number of checkerboard rows.
+columns = 9  # number of checkerboard columns.
+world_scaling = 35.0  # change this to the real world square size. Or not.
+_show = True
 
 
-def detecter_points(images_left, images_right, checkerboard, square_size, show=False):
-    """Détecte les coins du damier sur toutes les paires d'images."""
+def calibrate_camera(images_folder):
+    images_names = sorted(glob.glob(images_folder))
+    images = []
+    for imname in images_names:
+        im = cv2.imread(imname, 1)
+        images.append(im)
 
+    # criteria used by checkerboard pattern detector.
+    # Change this if the code can't find the checkerboard
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+
+    # coordinates of squares in the checkerboard world space
+    objp = np.zeros((rows * columns, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:rows, 0:columns].T.reshape(-1, 2)
+    objp = world_scaling * objp
+
+    # frame dimensions. Frames should be the same size.
+    width = images[0].shape[1]
+    height = images[0].shape[0]
+
+    # Pixel coordinates of checkerboards
+    imgpoints = []  # 2d points in image plane.
+
+    # coordinates of the checkerboard in checkerboard world space.
+    objpoints = []  # 3d point in real world space
+
+    for frame in images:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # find the checkerboard
+        ret, corners = cv2.findChessboardCorners(gray, (rows, columns), None)
+
+        if ret == True:
+            # Convolution size used to improve corner detection. Don't make this too large.
+            conv_size = (11, 11)
+
+            # opencv2 can attempt to improve the checkerboard coordinates
+            corners = cv2.cornerSubPix(gray, corners, conv_size, (-1, -1), criteria)
+            if _show:
+                # draw chessboard corners on frame
+                cv2.drawChessboardCorners(frame, (rows, columns), corners, ret)
+
+                # resize frame to fit to screen
+                res_frame = cv2.resize(frame, (1080, 720))
+                cv2.imshow('img', res_frame)
+                k = cv2.waitKey(100)
+
+            # append corner locations to imgpoints
+            objpoints.append(objp)
+            imgpoints.append(corners)
+
+    # perform camera calibration
+    # Modification : Forcer les coefficients de distorsion à 0
+    flags = cv2.CALIB_FIX_K1 + cv2.CALIB_FIX_K2 + cv2.CALIB_FIX_K3 + cv2.CALIB_ZERO_TANGENT_DIST
+    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, (width, height), None, None, flags=flags)
+    print(f'rmse single camera ({images_folder}): {ret}')
+
+    return mtx, dist, rvecs, tvecs
+
+
+def stereo_calibrate(mtx1, dist1, mtx2, dist2, frames_1, frames_2):
+    # read the synched frames
+    c1_images_names = glob.glob(frames_1)
+    c2_images_names = glob.glob(frames_2)
+
+    c1_images = []
+    c2_images = []
+    for im1, im2 in zip(c1_images_names, c2_images_names):
+        _im = cv2.imread(im1, 1)
+        c1_images.append(_im)
+
+        _im = cv2.imread(im2, 1)
+        c2_images.append(_im)
+
+    # criteria for stereo calibration
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
 
-    # Points 3D du damier dans son propre repère (Z = 0, plan)
-    objp = np.zeros((checkerboard[0] * checkerboard[1], 3), np.float32)
-    objp[:, :2] = np.mgrid[0:checkerboard[0], 0:checkerboard[1]].T.reshape(-1, 2)
-    objp *= square_size
+    # coordinates of squares in the checkerboard world space
+    objp = np.zeros((rows * columns, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:rows, 0:columns].T.reshape(-1, 2)
+    objp = world_scaling * objp
 
-    objpoints = []
-    imgpoints_left = []
+    # frame dimensions. Frames should be the same size.
+    width = c1_images[0].shape[1]
+    height = c1_images[0].shape[0]
+
+    # Pixel coordinates of checkerboards
+    imgpoints_left = []  # 2d points in image plane.
     imgpoints_right = []
 
-    img_size = None
-    paires_valides = 0
-    paires_rejetees = []
+    # coordinates of the checkerboard in checkerboard world space.
+    objpoints = []  # 3d point in real world space
 
-    for fname_l, fname_r in zip(images_left, images_right):
-        img_l = cv2.imread(fname_l)
-        img_r = cv2.imread(fname_r)
+    count = 0
+    for frame1, frame2 in zip(c1_images, c2_images):
+        gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+        c_ret1, corners1 = cv2.findChessboardCorners(gray1, (rows, columns), None)
+        c_ret2, corners2 = cv2.findChessboardCorners(gray2, (rows, columns), None)
 
-        if img_l is None or img_r is None:
-            print(f"[AVERTISSEMENT] Impossible de lire : {fname_l} ou {fname_r}")
-            paires_rejetees.append((fname_l, fname_r))
-            continue
+        if c_ret1 == True and c_ret2 == True:
+            corners1 = cv2.cornerSubPix(gray1, corners1, (11, 11), (-1, -1), criteria)
+            corners2 = cv2.cornerSubPix(gray2, corners2, (11, 11), (-1, -1), criteria)
 
-        gray_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2GRAY)
-        gray_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
+            if count == 0:
+                corner_point = [corners1[0], corners2[1]]
 
-        if img_size is None:
-            img_size = gray_l.shape[::-1]  # (width, height)
+            if _show:
+                cv2.drawChessboardCorners(frame1, (rows, columns), corners1, c_ret1)
+                res_frame = cv2.resize(frame1, (1080, 720))
+                cv2.imshow('img', res_frame)
 
-        flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
-        ret_l, corners_l = cv2.findChessboardCorners(gray_l, checkerboard, flags)
-        ret_r, corners_r = cv2.findChessboardCorners(gray_r, checkerboard, flags)
-
-        if ret_l and ret_r:
-            corners_l = cv2.cornerSubPix(gray_l, corners_l, (11, 11), (-1, -1), criteria)
-            corners_r = cv2.cornerSubPix(gray_r, corners_r, (11, 11), (-1, -1), criteria)
+                cv2.drawChessboardCorners(frame2, (rows, columns), corners2, c_ret2)
+                res_frame = cv2.resize(frame2, (1080, 720))
+                cv2.imshow('img2', res_frame)
+                k = cv2.waitKey(100)
 
             objpoints.append(objp)
-            imgpoints_left.append(corners_l)
-            imgpoints_right.append(corners_r)
-            paires_valides += 1
+            imgpoints_left.append(corners1)
+            imgpoints_right.append(corners2)
+            count += 1
 
-            if show:
-                vis_l = img_l.copy()
-                vis_r = img_r.copy()
-                cv2.drawChessboardCorners(vis_l, checkerboard, corners_l, ret_l)
-                cv2.drawChessboardCorners(vis_r, checkerboard, corners_r, ret_r)
-                combo = np.hstack([vis_l, vis_r])
-                combo = cv2.resize(combo, None, fx=0.5, fy=0.5)
-                cv2.imshow("Detection damier (gauche | droite)", combo)
-                cv2.waitKey(300)
-        else:
-            print(f"[INFO] Damier non détecté : {os.path.basename(fname_l)} / {os.path.basename(fname_r)}")
-            paires_rejetees.append((fname_l, fname_r))
+    stereocalibration_flags = cv2.CALIB_FIX_INTRINSIC
 
-    if show:
-        cv2.destroyAllWindows()
+    # stereo calibrate system
+    ret, CM1, dist1, CM2, dist2, R, T, E, F = cv2.stereoCalibrate(objpoints, imgpoints_left, imgpoints_right, mtx1,
+                                                                  dist1,
+                                                                  mtx2, dist2, (width, height), criteria=criteria,
+                                                                  flags=stereocalibration_flags)
 
-    print(f"\nPaires valides utilisées : {paires_valides}")
-    if paires_rejetees:
-        print(f"Paires rejetées ({len(paires_rejetees)}) :")
-        for l, r in paires_rejetees:
-            print(f"  - {os.path.basename(l)} / {os.path.basename(r)}")
+    print(f"rmse stereo: {ret}")
 
-    return objpoints, imgpoints_left, imgpoints_right, img_size
+    # Modification : print des résultats du calibrage
+    print_stereo_results(mtx1, mtx2, R, T, ret)
 
+    return R, T, corner_point
 
-def calibrer_camera(objpoints, imgpoints, img_size, fix_distortion=True, label=""):
-    """Calibrage intrinsèque d'une caméra."""
-    flags = 0
-    if fix_distortion:
-        # k1 = k2 = 0 comme fourni dans l'énoncé ; on fixe aussi k3, p1, p2 par défaut
-        flags = cv2.CALIB_FIX_K1 + cv2.CALIB_FIX_K2 + cv2.CALIB_FIX_K3 + cv2.CALIB_ZERO_TANGENT_DIST
+# Modification : Ajout d'une fonction qui print automatiquement les résultats du calibrage
+def print_stereo_results(mtx1, mtx2, R, T, ret_stereo):
 
-    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-        objpoints, imgpoints, img_size, None, None, flags=flags)
+    # Erreur de reprojection
+    print(f"\nErreur de reprojection stéréo (RMS): {ret_stereo:.4f} pixels")
 
-    print(f"\n--- Calibrage caméra {label} ---")
-    print(f"Erreur de reprojection (RMS) : {ret:.4f} pixels")
-    print(f"Matrice intrinsèque :\n{mtx}")
-    print(f"Coefficients de distorsion :\n{dist.ravel()}")
+    # Matrices intrinsèques
+    print("\nMatrice intrinsèque (Caméra gauche):")
+    print(mtx1)
+    print("\nMatrice intrinsèque (Caméra droite):")
+    print(mtx2)
 
-    return ret, mtx, dist, rvecs, tvecs
+    # Matrice de rotation
+    print("\nMatrice de rotation R (caméra droite par rapport à gauche):")
+    print(R)
 
-
-def calculer_erreur_reprojection(objpoints, imgpoints, rvecs, tvecs, mtx, dist):
-    """Calcule l'erreur moyenne de reprojection (validation du calibrage).
-
-    Utilise numpy plutôt que cv2.norm pour éviter les erreurs de type/forme
-    qui peuvent survenir selon la version d'OpenCV (ex. CV_32FC1 vs CV_32FC2).
-    """
-    total_error = 0
-    total_points = 0
-    for i in range(len(objpoints)):
-        imgpoints_proj, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
-
-        # On force les deux tableaux au même format (N, 2) en float64
-        pts_detectes = np.asarray(imgpoints[i], dtype=np.float64).reshape(-1, 2)
-        pts_projetes = np.asarray(imgpoints_proj, dtype=np.float64).reshape(-1, 2)
-
-        # Erreur euclidienne moyenne pour cette image
-        diff = pts_detectes - pts_projetes
-        error = np.sqrt(np.sum(diff ** 2, axis=1)).mean()
-
-        total_error += error
-        total_points += 1
-    return total_error / total_points if total_points else float("nan")
-
-
-def main():
-    args = parse_args()
-
-    images_left = sorted(glob.glob(args.left))
-    images_right = sorted(glob.glob(args.right))
-
-    if not images_left or not images_right:
-        print("Aucune image trouvée. Vérifiez les chemins --left et --right.")
-        sys.exit(1)
-
-    if len(images_left) != len(images_right):
-        print(f"[ERREUR] Nombre d'images différent : {len(images_left)} gauche vs {len(images_right)} droite.")
-        sys.exit(1)
-
-    print(f"{len(images_left)} paires d'images trouvées.")
-    print(f"Damier : {CHECKERBOARD[0]}x{CHECKERBOARD[1]} coins internes "
-          f"({(CHECKERBOARD[0]+1)*(CHECKERBOARD[1]+1)} cases), taille de case = {SQUARE_SIZE_MM} mm")
-
-    # 1) Détection des coins sur toutes les paires
-    objpoints, imgpoints_left, imgpoints_right, img_size = detecter_points(
-        images_left, images_right, CHECKERBOARD, SQUARE_SIZE_MM, show=args.show)
-
-    if len(objpoints) < 5:
-        print("\n[ATTENTION] Moins de 5 paires valides détectées. "
-              "Le calibrage risque d'être peu précis. Ajoutez plus d'images sous des angles variés.")
-
-    # 2) Calibrage intrinsèque de chaque caméra
-    ret_l, mtx_l, dist_l, rvecs_l, tvecs_l = calibrer_camera(
-        objpoints, imgpoints_left, img_size, FIX_DISTORTION_TO_ZERO, label="GAUCHE")
-    ret_r, mtx_r, dist_r, rvecs_r, tvecs_r = calibrer_camera(
-        objpoints, imgpoints_right, img_size, FIX_DISTORTION_TO_ZERO, label="DROITE")
-
-    # 3) Calibrage stéréo (paramètres extrinsèques R, T entre les deux caméras)
-    criteria_stereo = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
-    flags_stereo = cv2.CALIB_FIX_INTRINSIC  # on garde les intrinsèques déjà calculés
-
-    ret_stereo, mtx_l, dist_l, mtx_r, dist_r, R, T, E, F = cv2.stereoCalibrate(
-        objpoints, imgpoints_left, imgpoints_right,
-        mtx_l, dist_l, mtx_r, dist_r,
-        img_size, criteria=criteria_stereo, flags=flags_stereo)
-
-    print("\n=== Résultat du calibrage stéréo ===")
-    print(f"Erreur de reprojection stéréo (RMS) : {ret_stereo:.4f} pixels")
-    print(f"R (rotation caméra droite par rapport à gauche) :\n{R}")
-    print(f"T (translation caméra droite par rapport à gauche, mm) :\n{T.ravel()}")
-    print(f"Distance entre les caméras (baseline) : {np.linalg.norm(T):.2f} mm")
-    print(f"E (matrice essentielle) :\n{E}")
-    print(f"F (matrice fondamentale) :\n{F}")
-
-    # 4) Validation : erreur de reprojection moyenne par caméra
-    err_l = calculer_erreur_reprojection(objpoints, imgpoints_left, rvecs_l, tvecs_l, mtx_l, dist_l)
-    err_r = calculer_erreur_reprojection(objpoints, imgpoints_right, rvecs_r, tvecs_r, mtx_r, dist_r)
-    print(f"\nErreur de reprojection moyenne - gauche : {err_l:.4f} pixels")
-    print(f"Erreur de reprojection moyenne - droite : {err_r:.4f} pixels")
-    if max(err_l, err_r) < 1.0:
-        print("=> Calibrage jugé satisfaisant (erreur < 1 pixel).")
-    else:
-        print("=> Erreur élevée : envisager d'ajouter des paires d'images sous des angles plus variés, "
-              "de vérifier la planéité du damier ou l'éclairage.")
-
-    # 5) Sauvegarde des résultats
-    np.savez(args.out,
-              mtx_l=mtx_l, dist_l=dist_l,
-              mtx_r=mtx_r, dist_r=dist_r,
-              R=R, T=T, E=E, F=F,
-              img_size=img_size,
-              square_size_mm=SQUARE_SIZE_MM,
-              checkerboard=CHECKERBOARD,
-              reproj_error_left=err_l,
-              reproj_error_right=err_r,
-              reproj_error_stereo=ret_stereo)
-
-    print(f"\nRésultats sauvegardés dans : {args.out}")
-
+    # Vecteur de translation
+    print("\nVecteur de translation T (caméra droite par rapport à gauche, en mm):")
+    print(T.ravel())
 
 if __name__ == "__main__":
-    main()
+
+    #mtx1, dist1, rvecs1, tvecs1 = calibrate_camera(images_folder='calib_images/calib_images_vendredi_partiel/left_*.jpg')
+    #mtx2, dist2, rvecs2, tvecs2 = calibrate_camera(images_folder='calib_images/calib_images_vendredi_partiel/right_*.jpg')
+
+    #R, T, corner_point = stereo_calibrate(mtx1, dist1, mtx2, dist2, 'calib_images/calib_images_vendredi_partiel/left_*.jpg',
+     #                                     'calib_images/calib_images_vendredi_partiel/right_*.jpg')
+
+    mtx1, dist1, rvecs1, tvecs1 = calibrate_camera(images_folder='calib_images/calib_images_udes/left_*.jpg')
+    mtx2, dist2, rvecs2, tvecs2 = calibrate_camera(images_folder='calib_images/calib_images_udes/right_*.jpg')
+
+    R, T, corner_point = stereo_calibrate(mtx1, dist1, mtx2, dist2, 'calib_images/calib_images_udes/left_*.jpg',
+                                          'calib_images/calib_images_udes/right_*.jpg')
+
+    transformation_matrix = np.empty((4, 4))
+    transformation_matrix[:3, :3] = R
+    transformation_matrix[:3, 3] = T.T[0]
+    transformation_matrix[3, :] = [0, 0, 0, 1]
+
+    location_cam2 = np.dot(transformation_matrix, [[0], [0], [0], [1]])
