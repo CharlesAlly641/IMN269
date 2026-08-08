@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 
 def detecter_visage(img, marge=0.3):
-    """Détecte le plus grand visage dans l'image et retourne une boîte
-    (x, y, w, h) avec une marge ajoutée autour.
+    """Détecte le plus grand visage dans l'image et retourne une zone
+    (x, y, w, h) avec une marge supplémentaire.
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 

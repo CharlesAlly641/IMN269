@@ -86,7 +86,7 @@ if __name__ == "__main__":
 
         # Erreur de reprojection : distance en pixels entre le point détecté original et le point 3D reprojeté
         erreur_reproj = np.sqrt((pt_g[0] - u) ** 2 + (pt_g[1] - v) ** 2)
-        print(f"           Erreur de reprojection : {erreur_reproj:.2f} pixels")
+        print(f"Erreur de reprojection : {erreur_reproj:.2f} pixels")
 
         # Affichage sur l'image avec la couleur RGB appropriée
         cv2.circle(image_reprojetee, (u, v), radius=6, color=(int(b), int(g), int(r)), thickness=-1)
